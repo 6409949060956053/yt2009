@@ -22,7 +22,7 @@ USER node
 # if someone has told you to do modify them here please ignore their advice and tell them they're wrong
 ENV YT2009_PORT=80 \
     YT2009_ENV=dev \
-    YT2009_IP=192.168.11.87 \
+    YT2009_IP=127.0.0.1 \
     YT2009_SSL=false \
     YT2009_SSLPORT=443 \
     YT2009_SSLPATH=/yt2009/cert.crt \
