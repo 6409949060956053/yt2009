@@ -93,11 +93,19 @@ function initPlayer(parent, fullscreenEnabled) {
                     player_fullscreen = false;
                     fullscreen_btn.className = "fullscreen"
                     document.exitFullscreen();
+                    if(window.modifiersAdded) {
+                        adjustModifiers("FULLSCREEN_CLOSED")
+                    }
+                    fullscreenAdjustVheight()
                 } else {
                     $(".embed-container").requestFullscreen();
                     fullscreen_btn.className = "fullscreen opened"
                     fullscreen_btn.style.backgroundPosition = ""
                     player_fullscreen = true;
+                    if(window.modifiersAdded) {
+                        adjustModifiers("FULLSCREEN_OPENED")
+                    }
+                    fullscreenAdjustVheight()
                 }
                 
             }, false)
@@ -123,6 +131,10 @@ function initPlayer(parent, fullscreenEnabled) {
                         player_overlay.style.width = ""
                     }
                     adjustSeekbarWidth()
+                    if(window.modifiersAdded) {
+                        adjustModifiers("FULLSCREEN_CLOSED")
+                    }
+                    fullscreenAdjustVheight()
                 } else {
                     player_fullscreen = true;
                     fullscreen_btn.className = "fullscreen opened"
@@ -145,6 +157,10 @@ function initPlayer(parent, fullscreenEnabled) {
                         = "flash-player fullscreen-unsupported"
                     }
                     adjustSeekbarWidth()
+                    if(window.modifiersAdded) {
+                        adjustModifiers("FULLSCREEN_OPENED")
+                    }
+                    fullscreenAdjustVheight()
                 }
             }, false)
         }
@@ -202,6 +218,21 @@ function initPlayer(parent, fullscreenEnabled) {
                 mousein = true;
             }, 400)
         }, false)
+
+        // watch mouse pos for fullscreen fadeout
+        createMouseWatch()
+
+        // lock mouse whell scroll on embed
+        try {
+            window.addEventListener("scroll", function() {
+                if(window.scrollY > 0) {
+                    window.scrollTo(0,0)
+                }
+            }, false)
+        }
+        catch(error){
+            console.log(error)
+        }
     } else {
         // hide/show controls on mousein/mouseout
         var controlsFadeProgress = false;
@@ -243,8 +274,6 @@ function initPlayer(parent, fullscreenEnabled) {
             }
         }, false)
 
-
-
         $("#watch-player-div").addEventListener("mouseover", function() {
             lastMouseMovement = Math.floor(Date.now() / 1000)
             if(controlsFadeProgress
@@ -257,6 +286,9 @@ function initPlayer(parent, fullscreenEnabled) {
                 videoControlsShown = true;
             }, 250)
         }, false)
+
+        // watch mouse pos for fullscreen fadeout
+        createMouseWatch()
     }
 
     setTimeout(function() {
@@ -462,6 +494,9 @@ function timeUpdate() {
         video.pause()
         return;
     }
+    if(window.usingModifiers && !window.modifiersAdded) {
+        loadModifierTags()
+    }
     if(playingAsLive) return;
     elapsedbar.style.width = (video.currentTime / video.duration) * 100 + "%"
     if(video.duration <= video.currentTime) {
@@ -577,10 +612,31 @@ function annotation43force() {
     if(!document.querySelector(".annotations_container")) return;
     fourthree = true
     var vWidth = video.getBoundingClientRect().width
+    if((window.modifierTags
+    && window.modifierTags.indexOf("yt:crop=16:9") !== -1)
+    && mainElement.getBoundingClientRect) {
+        vWidth = Math.floor(mainElement.getBoundingClientRect().width)
+    }
     var width = vWidth / (4 / 3)
     $(".annotations_container").style.width = width + "px"
     var left = (vWidth - width) / 2
     $(".annotations_container").style.left = left + "px"
+
+    if(window.modifierTags
+    && window.modifierTags.indexOf("yt:stretch=16:9") !== -1) {
+        $(".annotations_container").style.left = "0px"
+    }
+
+    if(window.modifierTags
+    && window.modifierTags.indexOf("yt:crop=16:9") !== -1
+    && video.videoWidth) {
+        var scale = (
+            video.videoWidth / (video.videoWidth / video.videoHeight) * (16 / 9)
+        )
+        scale = (scale / video.videoWidth)
+        scale = scale.toFixed(2)
+        $(".annotations_container").style.transform = "scale(" + scale + ")"
+    }
 }
 
 // fix video height if old browser
@@ -591,6 +647,7 @@ function setVidHeight() {
         var h = document.getElementById("watch-this-vid")
                         .getBoundingClientRect().height
         video.style.height = (h - 25) + "px"
+        initialFullscreenHeightProperty = video.style.height
     }
 }
 setTimeout(setVidHeight, 100)
@@ -618,10 +675,12 @@ function adjustSeekbarWidth() {
     // loading gif
     if(document.querySelector(".html5-loading")) {
         // -16 from half the gif size (32x32)
-        $(".html5-loading").style.left = video.getBoundingClientRect().width / 2
-                                            - 16 + "px"
-        $(".html5-loading").style.top = video.getBoundingClientRect().height / 2
-                                            - 16 + "px"; 
+        var vidBounds = video.getBoundingClientRect()
+        if(window.modifiersAdded && mainElement.getBoundingClientRect) {
+            vidBounds = mainElement.getBoundingClientRect()
+        }
+        $(".html5-loading").style.left = vidBounds.width / 2 - 16 + "px"
+        $(".html5-loading").style.top = vidBounds.height / 2 - 16 + "px"; 
     }
 
 
@@ -831,7 +890,7 @@ volume_panel.addEventListener("mousemove", function(e) {
     if(mouseY <= 10 || mouseY >= 54) return;
 
     volume_head.style.top = mouseY - 5 + "px";
-    video.volume = Math.max(1 - ((mouseY - 10) / 40), 0)
+    video.volume = Math.max(1 - ((mouseY - 10) / 43), 0)
 
     if(mouseY >= 55) {
         video.volume = 0;
@@ -1267,12 +1326,7 @@ function annotationRender(annotation) {
     var ac = document.querySelector(".annotations_container") || mainElement
     var element = document.createElement("div")
     var container = mainElement;
-    if(mainElement == document) {
-        $(".embed-container").appendChild(element)
-        container = $(".embed-container")
-    } else {
-        ac.appendChild(element)
-    }
+    ac.appendChild(element)
     
 
     // setting css for our annotation element
@@ -1479,6 +1533,8 @@ function annotationRender(annotation) {
                                                     .toString()
                                             + " L " + relativePoints[2]
                                                     .toString() + " Z")
+                path.setAttributeNS(null, "stroke", "rgba(0,0,0,0.25)")
+                path.setAttributeNS(null, "stroke-width", "2px")
                 tip.appendChild(path)
 
                 // correct tip overflowing into the annotation itself
@@ -1905,7 +1961,7 @@ function captionsMain(source) {
                 }
             }
 
-            if(!captionsFound) {
+            if(!captionsFound && !audiotracksEnabled) {
                 var captionsPaHovered = false;
                 captionsSwitch.addEventListener("mousemove", function() {
                     captionsPaHovered = true;
@@ -2046,8 +2102,8 @@ function loadCaptions(id, language) {
             catch(error) {}
         }
         try {
-            if(mainElement.querySelector(".circle.selected")) {
-                mainElement.querySelector(".circle.selected")
+            if(mainElement.querySelector(".captions_selection .circle.selected")) {
+                mainElement.querySelector(".captions_selection .circle.selected")
                            .className = "circle"
                 mainElement.querySelector("[lang=\"" + language + "\"] .circle")
                            .className += " selected"
@@ -2173,13 +2229,88 @@ function resizeCaptions() {
 
 // hover-over caption selection ui
 function captionSelectShowUi() {
-    if(!ccListLoaded || !captionsEnabled) return;
+    if((!ccListLoaded || !captionsEnabled) && !audiotracksEnabled) return;
     $(".captions_popup").style.display = "block"
 }
 
 $(".cc .triangle-container").addEventListener("mouseover", captionSelectShowUi, false)
 $(".cc .triangle").addEventListener("mouseover", captionSelectShowUi, false)
 captionsSwitch.addEventListener("click", captionsMain, false)
+
+// audiotracks
+var audiotracksEnabled = false;
+function audiotracksMain() {
+    var tracks = window.sabrData.audiotrackData
+    $(".captions_popup").className += " will_audiotracks"
+    audiotracksEnabled = true;
+    if(!captionsEnabled) {
+        captionsMain()
+    }
+
+    var atContainer = document.createElement("div")
+    atContainer.className = "audio_track_container"
+    var atHeader = document.createElement("h2")
+    atHeader.innerHTML = "Audio Tracks"
+    atContainer.appendChild(atHeader)
+    var atList = document.createElement("ul")
+    atList.className = "audio_tracks"
+
+    tracks.forEach(function(track) {
+        var s = track.split(",")
+        var xtags = s[s.length - 1]
+        s.pop()
+        var name = s.join(",")
+        
+        var atElement = document.createElement("li")
+        var atCircle = document.createElement("span")
+        atCircle.className = "circle"
+        if(window.sabrData.currentXtag == xtags) {
+            atCircle.className += " selected"
+        }
+        atElement.appendChild(atCircle)
+        var atName = document.createElement("p")
+        atName.innerHTML = name;
+        atElement.appendChild(atName)
+        atElement.onclick = function() {
+            loadAudiotrack(xtags, atElement)
+        }
+        atList.appendChild(atElement)
+    })
+
+    atContainer.appendChild(atList)
+
+    if(tracks.length > 9) {
+        // 9 is the max that fits on the screen at once
+        // add a button to scroll if needed
+        var maxTrackScroll = (tracks.length - 8) * 18 //18px per element on list
+        var atMore = document.createElement("p")
+        atMore.className = "audio_track_more"
+        atMore.innerHTML = "[ ▼ more ]"
+        atMore.onclick = function() {
+            if((atList.scrollTop || atList.scrollY) >= maxTrackScroll - 10) {
+                atList.scrollTo(0,0)
+            } else {
+                atList.scrollBy(0,18)
+            }
+        }
+        atContainer.appendChild(atMore)
+    }
+
+    $(".captions_popup_container").appendChild(atContainer)
+}
+
+function loadAudiotrack(xtags, el) {
+    var z = $(".audio_track_container .audio_tracks li")
+    for(var sel in z) {
+        try {
+            z[sel].querySelector("span").className = "circle"
+        }
+        catch(error) {}
+    }
+    el.querySelector(".circle").className += " selected"
+    window.sabrData.customXtag = xtags;
+    sabrQualityChanged()
+}
 
 // switch back fullscreen sprite when exited externally
 try {
@@ -2192,6 +2323,7 @@ try {
             setTimeout(function() {
                 f.style.backgroundPosition = "0px 0px"
             }, 500)
+            fullscreenAdjustVheight()
         }
     }, false)
 }
@@ -2202,11 +2334,14 @@ catch(error) {}
 function showLoadingSprite() {
     var className = $(".html5-loading").className
     $(".html5-loading").className = className.replace("hid", "")
-    if(!$(".html5-loading").style.left) {
+    //if(!$(".html5-loading").style.left) {
         var vidBounds = video.getBoundingClientRect()
+        if(modifiersAdded && mainElement.getBoundingClientRect) {
+            vidBounds = mainElement.getBoundingClientRect()
+        }
         $(".html5-loading").style.left = vidBounds.width / 2 - 16 + "px";
         $(".html5-loading").style.top = vidBounds.height / 2 - 16 + "px";
-    }
+    //}
     setupLoadingRototo()
 }
 
@@ -2250,12 +2385,22 @@ try {
         switch(e.keyCode) {
             // arrow right
             case 39: {
-                video.currentTime += skipAmount
+                if((e.target
+                && e.target.nodeName.toLowerCase() !== "textarea"
+                && e.target.nodeName.toLowerCase() !== "input")
+                || !e.target) {
+                    video.currentTime += skipAmount
+                }
                 break;
             }
             // arrow left
             case 37: {
-                video.currentTime -= skipAmount
+                if((e.target
+                && e.target.nodeName.toLowerCase() !== "textarea"
+                && e.target.nodeName.toLowerCase() !== "input")
+                || !e.target) {
+                    video.currentTime -= skipAmount
+                }
             }
         }
     }, false)
@@ -2594,6 +2739,9 @@ function requestSabr(offset, source, force) {
     if(force) {
         url.push("&force_replayer=1")
     }
+    if(sabrData.customXtag) {
+        url.push("&xtags=" + sabrData.customXtag)
+    }
     function retryRequest(force) {
         sabrData.lastRequestFailCount++
         if(sabrData.lastRequestFailCount > 3) {
@@ -2622,6 +2770,23 @@ function requestSabr(offset, source, force) {
                 +" try reloading the page."
             )
             return;
+        }
+
+        // add audiotrack data if available
+        // (server only sends if exp_sabr_audiotracks enabled)
+        if(r.getResponseHeader("x-yt2009-used-xtag")) {
+            sabrData.currentXtag = r.getResponseHeader("x-yt2009-used-xtag")
+        }
+        if(r.getResponseHeader("x-yt2009-xtags")
+        && !sabrData.receivedAudiotrackData) {
+            sabrData.receivedAudiotrackData = true;
+            sabrData.audiotrackData = r.getResponseHeader("x-yt2009-xtags")
+                                       .split(";")
+            try {
+                sabrData.audiotrackData.sort()
+            }
+            catch(error){}
+            audiotracksMain()
         }
 
         // parse x-yt2009-saber
@@ -2690,7 +2855,9 @@ function initAsSabr() {
         "waitingSabrFetch": false,
         "timedCooldown": false,
         "timedSabrFetchAborted": false,
-        "lastRequestFailCount": 0
+        "lastRequestFailCount": 0,
+        "readAhead": 14,
+        "defaultLongReadaheadSet": false
     }
 
     // start once ready
@@ -2740,6 +2907,12 @@ function initAsSabr() {
 
     // watch for new buffer fetches
     video.addEventListener("timeupdate", function() {
+        if(!sabrData.defaultLongReadaheadSet
+        && video.duration >= (60 * 3)) {
+            sabrData.defaultLongReadaheadSet = true;
+            sabrData.readAhead = 50
+        }
+
         if(video.currentTime > 120
         && !sabrData.videoBuffer.updating
         && !sabrData.audioBuffer.updating) {
@@ -2763,7 +2936,7 @@ function initAsSabr() {
         var currentRange = arrayedRanges.filter(function(s) {
             return (s.start <= c && s.end >= c)
         })[0]
-        if(currentRange && ((currentRange.end - c) < 14
+        if(currentRange && ((currentRange.end - c) < sabrData.readAhead
         && (currentRange.end - c) > 0.1
         && !(video.duration - currentRange.end <= 0.3))
         && !sabrData.appendQueue[0]) {
@@ -2823,6 +2996,16 @@ function initAsSabr() {
             }
         }
     }, false)
+
+    video.addEventListener("waiting", function() {
+        showLoadingSprite()
+
+        setTimeout(function() {
+            if(Math.floor(video.currentTime) == Math.floor(video.duration)) {
+                video_pause()
+            }
+        }, 1000)
+    })
 }
 
 function sabrQualityChanged() {
@@ -2860,7 +3043,8 @@ function markPlaybackModeDone() {
 function createPlaybackModePickr(parent) {
     // show playback mode pickr
     if(document.cookie.indexOf("saber_playback_mode_picked=") == -1
-    && document.cookie.indexOf("exp_sabr") !== -1) {
+    && document.cookie.indexOf("exp_sabr") !== -1
+    && window.sabrHostUnsupported) {
         markPlaybackModeDone()
         //return;
     }
@@ -3233,4 +3417,187 @@ function initChapterMarks(timeStamps, duration, labels) {
         stamps.appendChild(c)
         i++
     })
+}
+
+
+// tag support
+var modifierTags = ""
+var usingModifiers = false;
+var modifiersAdded = false;
+// initModifiers is initially called and marks some values
+// to apply mods on timeupdate (video is playing by then)
+// otherwise videoWidth and videoHeight are 0 and can't apply mods
+function initModifiers(modifiers) {
+    modifierTags = modifiers;
+    usingModifiers = true;
+}
+function loadModifierTags(source) {
+    if(!video.videoWidth
+    || !video.videoHeight) return;
+    var modifiers = modifierTags.split(",")
+    modifiersAdded = true;
+    var vw = video.videoWidth;
+    var vh = video.videoHeight;
+    
+    var transforms = []
+    modifiers.forEach(function(tag) {
+        switch(tag.split("#")[0]) {
+            case "yt:stretch=4:3": {
+                // squishes the vid to 4:3
+                var newWidthPx = vh * (4 / 3)
+                var scale = ((newWidthPx) / vw)
+                scale = scale.toFixed(2)
+                transforms.push("scaleX(" + scale + ")")
+                break;
+            }
+            case "yt:stretch=16:9": {
+                // stretches a vid to 16:9
+                var newWidthPx = vh * (16 / 9)
+                var scale = ((newWidthPx) / vw)
+                scale = scale.toFixed(2)
+                transforms.push("scaleX(" + scale + ")")
+                break;
+            }
+            case "yt:crop=16:9": {
+                // crops a 4:3 to fill the entire 16:9 view
+                var newWidthPx = vw / (vw / vh) * (16 / 9)
+                var scale = (newWidthPx / vw)
+                scale = scale.toFixed(2)
+                transforms.push("scale(" + scale + ")")
+                break;
+            }
+            case "yt:cc=on": {
+                // autoenable captions
+                if(!captionsEnabled
+                && (!source || source !== "autoadjust")) {
+                    captionsMain()
+                }
+                break;
+            }
+            case "yt:quality=high": {
+                // auto switch to high quality
+                if((!window.hqPlaying
+                && mainElement.querySelector(".hq")
+                && !playingAsLive
+                && !window.sabrData)
+                || (window.sabrData && !window.sabrHd)
+                && (!source || source !== "autoadjust")) {
+                    // normal playback
+                    try {
+                        $(".video_controls .hq").click()
+                    }
+                    catch(error) {}
+                }
+                break;
+            }
+            case "yt:bgcolor=": {
+                // set video element's bgcolor
+                var ttag = tag;
+                var colorHex = ttag.split("=#")[1]
+                if(colorHex.length > 8) return;
+                video.style.backgroundColor = "#" + colorHex
+                break;
+            }
+        }
+    })
+
+    if(transforms.length >= 1) {
+        video.style.transform = transforms.join(" ")
+    }
+}
+
+function adjustModifiers(source) {
+    switch(source) {
+        case "FULLSCREEN_OPENED": {
+            // letterbox stretched video if on a non-matching aspect ratio
+            if(modifierTags && modifierTags.indexOf("yt:stretch=16:9") !== -1
+            && (window.innerWidth / window.innerHeight) < 1.5) {
+                var scale = (video.videoHeight / video.videoWidth)
+                scale = scale.toFixed(2)
+                video.style.transform = "scaleY(" + scale + ")"
+            }
+            break;
+        }
+        case "FULLSCREEN_CLOSED":
+        default: {
+            loadModifierTags("autoadjust")
+            break;
+        }
+    }
+}
+
+// fadeout player on fullscreen
+var lastMousePosition = [0,0]
+var fullscreenControlsFaded = false;
+var fullscreenControlsFadeAnimationOngoing = false;
+var fullscreenControlsFadeInterval;
+var fullscreenControlsOpacity = 1;
+var initialFullscreenHeightProperty = ""
+function fullscreenAdjustVheight() {
+    if(player_fullscreen) {
+        video.style = "height:100% !important;"
+    } else {
+        video.style.height = initialFullscreenHeightProperty;
+    }
+}
+function createMouseWatch() {
+    try {
+        mainElement.addEventListener("mousemove", function(e) {
+            var x = e.pageX || e.clientX;
+            var y = e.pageY || e.clientY;
+            lastMousePosition = [x,y]
+            lastMouseMovement = Math.floor(Date.now() / 1000)
+
+            if(fullscreenControlsFaded) {
+                // unfade controls
+                if(fullscreenControlsFadeInterval) {
+                    clearInterval(fullscreenControlsFadeInterval)
+                    fullscreenControlsFadeInterval = false;
+                }
+                if(mainElement.querySelector(".annotations_container")) {
+                    $(".annotations_container").style.cursor = "pointer"
+                }
+                video.style.cursor = "pointer"
+                fullscreenControlsFadeInterval = setInterval(function() {
+                    fullscreenControlsOpacity += 0.35
+                    if(fullscreenControlsOpacity > 1) {
+                        fullscreenControlsOpacity = 1;
+                    }
+                    $(".video_controls").style.opacity = fullscreenControlsOpacity
+                    if(fullscreenControlsOpacity == 1) {
+                        clearInterval(fullscreenControlsFadeInterval)
+                        fullscreenControlsFadeInterval = false;
+                    }
+                }, 30)
+            }
+        }, false)
+
+        var x = setInterval(function() {
+            var now = Math.floor(Date.now() / 1000)
+            if(now - lastMouseMovement >= 3
+            && player_fullscreen 
+            && !fadeControlsEnable) {
+                // fade controls
+                fullscreenControlsFaded = true;
+                fullscreenControlsFadeAnimationOngoing = true;
+                fullscreenControlsFadeInterval = setInterval(function() {
+                    fullscreenControlsOpacity -= 0.35
+                    if(fullscreenControlsOpacity < 0) {
+                        fullscreenControlsOpacity = 0;
+                    }
+                    $(".video_controls").style.opacity = fullscreenControlsOpacity
+                    if(fullscreenControlsOpacity == 0) {
+                        clearInterval(fullscreenControlsFadeInterval)
+                        fullscreenControlsFadeInterval = false;
+
+                        if(mainElement.querySelector(".annotations_container")) {
+                            $(".annotations_container").style.cursor = "none"
+                        }
+                        video.style.cursor = "none"
+                    }
+                }, 30)
+            }
+        }, 1000)
+    }
+    catch(error){}
 }

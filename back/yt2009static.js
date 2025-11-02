@@ -4,6 +4,7 @@ const footer = fs.readFileSync("../static_pages/footer.html")
 const utils = require("./yt2009utils")
 const templates = require("./yt2009templates")
 const doodles = require("./yt2009doodles")
+const languages = require("./language_data/language_engine")
 
 module.exports = {
     "createSite": function(path_to_content, req, res) {
@@ -20,6 +21,14 @@ module.exports = {
             site = site.replace(
                 `<a href="/channels">Channels</a>`,
                 `<a href="/channels">Channels</a><a href="#">Shows</a>`
+            )
+        }
+
+        if(utils.isUnsupportedNode()
+        && site.includes(`var usesUnsupportedNode = false;`)) {
+            site = site.replace(
+                `var usesUnsupportedNode = false;`,
+                `var usesUnsupportedNode = true;`
             )
         }
 
@@ -53,6 +62,7 @@ module.exports = {
         }
         site = require("./yt2009loginsimulate")(req, site)
         site = doodles.applyDoodle(site, req)
+        site = languages.apply_lang_to_code(site, req)
         res.send(site)
     }
 }

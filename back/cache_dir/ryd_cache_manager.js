@@ -74,9 +74,10 @@ module.exports = {
             }
             ongoingCallbacks[id].push(function() {
                 if(cache[id]) {
-                    console.log("ryd received")
-                    clearInterval(x)
+                    //console.log("ryd received")
                     callback(cache[id])
+                } else {
+                    callback(5)
                 }
             })
             return;

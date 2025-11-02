@@ -147,6 +147,26 @@ if(process.env.YT2009_FILE_LIMIT
     cfg.file_limit = parseInt(process.env.YT2009_FILE_LIMIT);
 }
 
+// set defaultf
+switch (process.env.YT2009_DEFAULTF) {
+    case 'true':
+        cfg.default_f = true;
+        break;
+    case 'false':
+        cfg.default_f = false;
+        break;
+}
+
+// set defaultfh264
+switch (process.env.YT2009_DEFAULTFH264) {
+    case 'true':
+        cfg.default_fh264 = true;
+        break;
+    case 'false':
+        cfg.default_fh264 = false;
+        break;
+}
+
 // set ssl
 switch (process.env.YT2009_SSL) {
     case 'true':

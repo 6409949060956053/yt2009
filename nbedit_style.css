@@ -241,3 +241,18 @@ a[href="/my_videos_upload"] span {
     width: 100px;
     max-width: 100px;
 }
+
+
+.yt2009-sup-icon {
+    color: white;
+    background-color: darkred;
+    padding: 1px 4px;
+    cursor: default;
+}
+
+.watch-replies-show-link {
+    margin: 7px 9px;
+    display: block;
+    font-weight: bold;
+    margin-top: 10px;
+}

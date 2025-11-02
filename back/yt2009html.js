@@ -21,6 +21,7 @@ const userid = require("./cache_dir/userid_cache")
 const crypto = require("crypto")
 const signedInNext = false;
 const devTimings = false;
+const oneWeek = 1000 * 60 * 60 * 24 * 7
 
 const watchpage_code = fs.readFileSync("../watch.html").toString();
 const watchpage_feather = fs.readFileSync("../watch_feather.html").toString()
@@ -60,9 +61,10 @@ let oldCommentsWrite = setInterval(function() {
         JSON.stringify(oldCommentsCache)
     )
 }, 1000 * 60 * 60)
+let sups = []
 
 module.exports = {
-    "innertube_get_data": function(id, callback) {
+    "innertube_get_data": function(id, callback, pullChannelEarly) {
         let useAndroidPlayer = true;
 
         let timer = 0;
@@ -151,7 +153,7 @@ module.exports = {
         }
         let callbacksMade = 0;
         let combinedResponse = {}
-        fetch(`https://www.youtube.com/youtubei/v1/next?key=${api_key}`, {
+        fetch(`https://www.youtube.com/youtubei/v1/next?prettyPrint=false`, {
             "headers": signedInNext ? rHeaders : constants.headers,
             "referrer": `https://www.youtube.com/`,
             "referrerPolicy": "strict-origin-when-cross-origin",
@@ -225,6 +227,21 @@ module.exports = {
                 combinedResponse.freezeSync = true;
                 // ^ overriden when category pull done successfully
             }
+            if(r.videoDetails
+            && r.videoDetails.channelId
+            && pullChannelEarly) {
+                const yt2009channels = require("./yt2009channels")
+                yt2009channels.main({
+                    "path": "/channel/" + r.videoDetails.channelId,
+                    "headers": {"cookie": ""},
+                    "query": {"f": 0, "earlyPull": true}
+                }, 
+                {"send": function(data) {
+                    if(devTimings) {
+                        console.log("early channel fetch success", timer)
+                    }
+                }}, "", true)
+            }
             for(let i in r) {
                 combinedResponse[i] = r[i]
             }
@@ -236,7 +253,10 @@ module.exports = {
         })})
     },
 
-    "fetch_video_data": function(id, callback, userAgent, userToken, useFlash, resetCache, disableDownload) {
+    "fetch_video_data": function(
+        id, callback, userAgent, userToken, useFlash,
+        resetCache, disableDownload, pullChannelEarly
+    ) {
         let waitForOgv = false;
 
         // if firefox<=25 wait for ogg, otherwise callback mp4
@@ -319,7 +339,15 @@ module.exports = {
                             displayError = videoData.playabilityStatus
                                            .errorScreen
                                            .playerErrorMessageRenderer
-                                           .subreason.simpleText
+                            if(displayError.subreason) {
+                                displayError = displayError.subreason
+                                                           .simpleText;
+                            } else if(videoData.playabilityStatus.reason) {
+                                displayError = videoData.playabilityStatus
+                                                        .reason
+                            } else {
+                                displayError = defaultError
+                            }
                         }
                         catch(error) {}
                     }
@@ -390,10 +418,36 @@ module.exports = {
                         return s.videoSecondaryInfoRenderer
                     })[0]
                     if(secondary) {
-                        data.author_img = secondary.videoSecondaryInfoRenderer
-                                          .owner.videoOwnerRenderer.thumbnail
-                                          .thumbnails[1].url;
-                        data.author_img = yt2009utils.saveAvatar(data.author_img)
+                        // has a renderer to try and get an avatar from
+                        let owner = secondary.videoSecondaryInfoRenderer.owner
+                                             .videoOwnerRenderer
+                        if(owner.thumbnail) {
+                            // normal avatar
+                            data.author_img = owner.thumbnail
+                                                   .thumbnails[1].url;
+                            data.author_img = yt2009utils.saveAvatar(
+                                data.author_img
+                            )
+                        } else if(owner.avatarStack
+                        && owner.avatarStack.avatarStackViewModel
+                        && owner.avatarStack.avatarStackViewModel.avatars) {
+                            // avatarStack comes up instead of thumbnail
+                            // if multiple creators are "authors" of the video
+                            // example: http://youtu.be/Ut41eePtfBk
+                            try { 
+                                let f = owner.avatarStack.avatarStackViewModel
+                                             .avatars[0]
+                                data.author_img = f.avatarViewModel.image
+                                                    .sources[0].url
+                            }
+                            catch(error) {
+                                console.log(error)
+                                data.author_img = "default"
+                            }
+                        } else {
+                            // otherwise put a default avatar
+                            data.author_img = "default"
+                        }
                     } else {
                         data.author_img = "default"
                     }
@@ -402,11 +456,26 @@ module.exports = {
                 catch(error) {
                     data.author_img = "default"
                 }
-                if(videoData.microformat) {
+                if(videoData.microformat
+                && videoData.microformat.playerMicroformatRenderer
+                && videoData.microformat.playerMicroformatRenderer.uploadDate) {
                     data.upload = videoData.microformat.playerMicroformatRenderer
                                            .uploadDate
+                    data.confirmedTrueUpload = true;
+                    // freezecache if less than a week old
+                    // to allow flow of new comments and interactions
+                    let dUnix = new Date(data.upload).getTime()
+                    if(Date.now() - oneWeek < dUnix) {
+                        data.freezeCache = true;
+                    }
                 } else if(videoData.publishDate) {
                     data.upload = videoData.publishDate
+                    data.confirmedTrueUpload = true;
+                    // freezecache same as ^^
+                    let dUnix = new Date(data.upload).getTime()
+                    if(Date.now() - oneWeek < dUnix) {
+                        data.freezeCache = true;
+                    }
                 } else {
                     try {
                         data.upload = videoData.contents.twoColumnWatchNextResults
@@ -561,7 +630,8 @@ module.exports = {
                         catch(error){}
                         if(!time
                         || time.toLowerCase().includes("live")
-                        || time.toLowerCase().includes("short")) return;
+                        || time.toLowerCase().includes("short")
+                        || time.toLowerCase().includes("premier")) return;
                         data.related.push({
                             "id": id,
                             "title": title,
@@ -615,7 +685,9 @@ module.exports = {
                     || video.lengthText.simpleText.toLowerCase()
                             .includes("live")
                     || video.lengthText.simpleText.toLowerCase()
-                            .includes("short")) return;
+                            .includes("short")
+                    || video.lengthText.simpleText.toLowerCase()
+                            .includes("premier")) return;
                     if(video.viewCountText && video.viewCountText.simpleText
                     && video.viewCountText.simpleText.includes("No ")) {
                         video.viewCountText.simpleText = "0 views"
@@ -647,7 +719,7 @@ module.exports = {
                     }
                     let dataApiUrl = [
                         "https://www.googleapis.com/youtube/v3/videos",
-                        "?part=statistics&id=" + viewmodelViewCountFails.join(),
+                        "?part=statistics,snippet&id=" + viewmodelViewCountFails.join(),
                         "&key=" + config.data_api_key
                     ].join("")
                     fetch(dataApiUrl, {
@@ -666,6 +738,10 @@ module.exports = {
                                     vc = yt2009utils.countBreakup(vc)
                                     vc += " views"
                                     data.related[i].views = vc;
+                                }
+                                if(i !== null && i !== undefined && i >= 0
+                                && v.snippet && v.snippet.title) {
+                                    data.related[i].title = v.snippet.title
                                 }
                             })
                         }
@@ -706,6 +782,15 @@ module.exports = {
 
                 // qualities
                 data.qualities = []
+
+                if(yt2009utils.isUnsupportedNode()
+                && videoData.streamingData
+                && videoData.streamingData.adaptiveFormats) {
+                    // unsupported node can't load adaptiveFormats
+                    // so don't even try
+                    videoData.streamingData.adaptiveFormats = []
+                }
+
                 if(!videoData.streamingData) {
                     videoData.streamingData = {}
                 }
@@ -726,6 +811,13 @@ module.exports = {
                         data.qualities.push(quality.qualityLabel)
                     }
                 })
+
+                // disabled comments
+                if(JSON.stringify(videoData).includes(
+                    "/answer/9706180"
+                )) {
+                    data.commentsDisabled = true;
+                }
                 
                 // save mp4/ogv
 
@@ -780,7 +872,7 @@ module.exports = {
                         cache.write(id, data);
                     }
                 }
-            }))
+            }), pullChannelEarly)
 
             // fetch comments
             const pb = require("./proto/cmts_pb")
@@ -813,7 +905,7 @@ module.exports = {
                     if(fetchesCompleted >= fetchesRequired) {
                         callback(data)
                     }
-                }
+                }, true
             )
         }
     },
@@ -842,7 +934,7 @@ module.exports = {
 
         // basic data
         // flags
-        flags = ""
+        let flags = ""
         try {
             if(req.query.flags) {
                 flags += decodeURIComponent(req.query.flags)
@@ -897,6 +989,35 @@ module.exports = {
         if(flags.includes("exp_sabr")) {
             useSabr = true;
             sabrBaseUrl = yt2009sabr.initPlaybackSession(data.id, data.qualities)
+        }
+
+        // disable playback mode picker on unsupported node hosts
+        if(yt2009utils.isUnsupportedNode()) {
+            code = code.replace(
+                `//yt2009-unsupport`,
+                `var sabrHostUnsupported = true;`
+            )
+        }
+
+        // put tags whereeever needed in html5 for custom params
+        let html5PlayerTags = [
+            "yt:crop=16:9",
+            "yt:stretch=4:3",
+            "yt:stretch=16:9",
+            "yt:bgcolor=#",
+            "yt:cc=on",
+            "yt:quality=high"
+        ]
+        let playerModifyingTags = data.tags.filter(s => {
+            return (html5PlayerTags.includes(s) && !s.includes("\"")
+                 || s.startsWith("yt:bgcolor="))
+        })
+        if(playerModifyingTags.length >= 1 && !useFlash) {
+            let modifiersCode = playerModifyingTags.join(",")
+            code = code.replace(
+                `//yt2009-html5-modifiers`,
+                `try{window.initModifiers("${modifiersCode}")}catch(error){}`
+            )
         }
 
         // useragent
@@ -1019,6 +1140,14 @@ module.exports = {
             code = code.replace(
                 `//yt2009-unplay`,
                 `showUnrecoverableError("This video is unavailable.")`
+            )
+        }
+
+        // show notice on disabled comments
+        if(data.commentsDisabled) {
+            code = code.replace(
+                `<!--yt2009_relay_comment_form-->`,
+                yt2009templates.disabledCommentsNotice
             )
         }
 
@@ -1956,7 +2085,9 @@ https://web.archive.org/web/20091111/http://www.youtube.com/watch?v=${data.id}`
                 if(isNaN(presentedLikeCount)) {presentedLikeCount = 0;}
 
                 // comment id
-                let id = commentId(comment.authorUrl, comment.content)
+                let id = comment.commentId || commentId(
+                    comment.authorUrl, comment.content
+                )
 
                 let customRating = 0;
                 let customData = hasComment(data.id, id)
@@ -1979,7 +2110,8 @@ https://web.archive.org/web/20091111/http://www.youtube.com/watch?v=${data.id}`
                     flags,
                     true,
                     presentedLikeCount,
-                    id
+                    id,
+                    comment.r
                 )
 
                 if(customRating == 1) {
@@ -2387,7 +2519,7 @@ https://web.archive.org/web/20091111/http://www.youtube.com/watch?v=${data.id}`
 
         // exp_ryd / use_ryd / merged
         let useRydRating = "4.5"
-        let endRating = "4.5"
+        let rydCallbackSent = false;
         requiredCallbacks++;
         yt2009ryd.readWait(data.id, (rating) => {
             if(!rating.toString().includes(".5")) {
@@ -2402,7 +2534,6 @@ https://web.archive.org/web/20091111/http://www.youtube.com/watch?v=${data.id}`
             if(userRating == 0) {
                 avgRating = useRydRating;
             }
-            endRating = avgRating
             if(!avgRating.toString().endsWith(".5")
             && !avgRating.toString().endsWith(".0")) {
                 avgRating = avgRating.toString() + ".0"
@@ -2414,16 +2545,13 @@ https://web.archive.org/web/20091111/http://www.youtube.com/watch?v=${data.id}`
             
             if(rating == "0.0") {
                 // if no actual ratings, change onsite rating number to 0
-                let ratingCount = 
-                code.split(
+                let ratingCount = code.split(
                     `id="defaultRatingMessage"><span class="smallText">`
-                    )[1]
-                    .split(` lang_ratings_suffix`)[0]
+                )[1].split(` lang_ratings_suffix`)[0]
                 code = code.replace(
                     `id="defaultRatingMessage"><span class="smallText">${ratingCount}`,
                     `id="defaultRatingMessage"><span class="smallText">0`
                 )
-
             }
 
             useRydRating = parseFloat(rating)
@@ -2440,17 +2568,52 @@ https://web.archive.org/web/20091111/http://www.youtube.com/watch?v=${data.id}`
                 )
             }
 
-            callbacksMade++;
-            if(devTimings) {
-                let progress = `${callbacksMade}/${requiredCallbacks}`
-                console.log(`ryd (${progress})`, time)
-            }
-            if(requiredCallbacks == callbacksMade) {
-                render_endscreen();
-                fillFlashIfNeeded();
-                callback(code)
+            if(!rydCallbackSent) {
+                rydCallbackSent = true;
+                callbacksMade++;
+                if(devTimings) {
+                    let progress = `${callbacksMade}/${requiredCallbacks}`
+                    console.log(`ryd (${progress})`, time)
+                }
+                if(requiredCallbacks == callbacksMade) {
+                    render_endscreen();
+                    fillFlashIfNeeded();
+                    callback(code)
+                }
             }
         })
+
+        // allow_clientside_ryd -- time out serverside fetch of ryd
+        // if it takes longer than 300ms
+        // this includes the ~700-800ms of fetchVideoData
+        // so by the timeout point, ryd is taking at least 1 second to respond
+        if(flags.includes("allow_clientside_ryd")
+        && !rydCallbackSent && !useFlash) {
+            setTimeout(() => {
+                if(!rydCallbackSent) {
+                    rydCallbackSent = true;
+                    callbacksMade++;
+                    if(devTimings) {
+                        let progress = `${callbacksMade}/${requiredCallbacks}`
+                        console.log(`ryd (timeout) (${progress})`, time)
+                    }
+                    if(requiredCallbacks == callbacksMade) {
+                        render_endscreen();
+                        fillFlashIfNeeded();
+                        callback(code)
+                    }
+                    code = code.replace(
+                        `id="ratingMessage"`,
+                        `id="ratingMessage" class="hid"`
+                    )
+                    code = code.split("4.5").join("0.0")
+                    code = code.replace(
+                        `//yt2009-rating`,
+                        yt2009templates.clientsideRydScript
+                    )
+                }
+            }, 300)
+        }
 
         // sharing
         let shareBehaviorServices = constants.shareBehaviorServices
@@ -2678,6 +2841,14 @@ https://web.archive.org/web/20091111/http://www.youtube.com/watch?v=${data.id}`
                 && !disableChapters) {
                     flash_url += "&markers=" + chapters.join(",")
                 }
+
+                // 2009: pass keywords to enable player settings
+                // such as yt:stretch=16:9
+                if(flash_url.includes("/watch.swf")
+                && data.tags && data.tags.length >= 1) {
+                    let keywords = data.tags.join(",").split("&").join("")
+                    flash_url += "&keywords=" + keywords
+                }
                 
                 flash_url += render_endscreen_f()
 
@@ -2743,7 +2914,8 @@ https://web.archive.org/web/20091111/http://www.youtube.com/watch?v=${data.id}`
             code = code.replace(
                 `//yt2009-exp-hq-btn`,
                 yt2009templates.playerHDBtnJS(
-                    data.id, use720p, autoHQ, trustedContextData
+                    data.id, use720p, autoHQ,
+                    trustedContextData, (data.length / 60)
                 )
                 + enableConnCheck
             )
@@ -2796,7 +2968,7 @@ https://web.archive.org/web/20091111/http://www.youtube.com/watch?v=${data.id}`
             code = code.replace(
                 `//yt2009-exp-hq-btn`,
                 yt2009templates.playerHDSabr(
-                    use720p, autoHQ
+                    use720p, autoHQ, (data.length / 60)
                 )
             )
 
@@ -2853,6 +3025,13 @@ https://web.archive.org/web/20091111/http://www.youtube.com/watch?v=${data.id}`
                 yt2009templates.watchpageTurn(posExclude)
             )
 
+        }
+
+        // sup icon
+        if(sups.includes(data.author_id)) {
+            code = code.replace(`<!--sup-->`, yt2009templates.watchSupIcon)
+        } else {
+            code = code.replace(`<!--sup-->`, "")
         }
 
         // exp_related
@@ -3084,7 +3263,7 @@ https://web.archive.org/web/20091111/http://www.youtube.com/watch?v=${data.id}`
 
 
 
-    "request_continuation": function(token, id, comment_flags, callback) {
+    "request_continuation": function(token, id, comment_flags, callback, useContinuation) {
         // continuation na komentarze
         if(!token) {
             callback([])
@@ -3094,7 +3273,7 @@ https://web.archive.org/web/20091111/http://www.youtube.com/watch?v=${data.id}`
         if(continuations_cache[token]) {
             callback(continuations_cache[token])
         } else {
-            fetch("https://www.youtube.com/youtubei/v1/next?key=" + api_key, {
+            fetch("https://www.youtube.com/youtubei/v1/next?prettyPrint=false", {
                 "headers": {
                     "accept": "*/*",
                     "accept-language": "en-US,en;q=0.9",
@@ -3119,12 +3298,13 @@ https://web.archive.org/web/20091111/http://www.youtube.com/watch?v=${data.id}`
                 "mode": "cors"
             }).then(r => {
                 r.json().then(response => {
-                    callback(
-                        yt2009utils.comments_parser(response, comment_flags)
+                    let comments = yt2009utils.comments_parser(
+                        response, comment_flags, useContinuation
                     )
-                    continuations_cache[token] = JSON.parse(JSON.stringify(
-                        yt2009utils.comments_parser(response, comment_flags)
-                    ))
+                    callback(comments)
+                    continuations_cache[token] = JSON.parse(
+                        JSON.stringify(comments)
+                    )
                 })
             })
         }
@@ -3411,6 +3591,11 @@ https://web.archive.org/web/20091111/http://www.youtube.com/watch?v=${data.id}`
             })
             featured_videos.unshift(v)
         })
+        fs.writeFile(
+            "./cache_dir/watched_now.json",
+            JSON.stringify(featured_videos),
+            (e) => {}
+        )
         if(config.env == "dev") {
             console.log("received " + videos.length + " videos from master")
         }
@@ -3438,10 +3623,15 @@ https://web.archive.org/web/20091111/http://www.youtube.com/watch?v=${data.id}`
             if(resetcache) {
                 identif += "+resetcache"
             }
-            yt2009channels.main({"path": channelUrl, 
+            /*yt2009channels.main({"path": channelUrl, 
             "headers": {"cookie": ""},
             "query": {"f": 0}}, 
-            {"send": function(data) {
+            {"send": function(data) {*/
+            yt2009channels.mainWithEarly(data.author_id, (data) => {
+                if(!data) {
+                    callback(null)
+                    return;
+                }
                 if(devTimings) {
                     console.log("default banner data pulled")
                 }
@@ -3453,7 +3643,8 @@ https://web.archive.org/web/20091111/http://www.youtube.com/watch?v=${data.id}`
                     dataSent = true
                     callback(null)
                 }
-            }}, identif, true)
+            })
+            /*}}, identif, true)*/
             setTimeout(() => {
                 if(!dataSent) {
                     callback(null)
@@ -3511,6 +3702,10 @@ https://web.archive.org/web/20091111/http://www.youtube.com/watch?v=${data.id}`
 
     "valid": function() {
         return validationRan;
+    },
+
+    "setSupData": function(s) {
+        sups = s;
     }
 }
 

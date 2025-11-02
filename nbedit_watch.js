@@ -96,13 +96,22 @@ $("#watch-video-details-toggle-more").addEventListener("click", function() {
 function onWatchCommentsShowMore() {
     $("#watch-comments-show-more-td").style.display = "none"
     var nextPage = parseInt($(".comments-container").getAttribute("data-page")) + 1
+    var continuationToken = $(".comments-container").getAttribute("data-continuation-token")
     // request
     var r = new XMLHttpRequest();
     r.open("GET", "/get_more_comments")
-    r.setRequestHeader(
-        "page",
-        parseInt($(".comments-container").getAttribute("data-page"))
-    )
+    if(continuationToken
+    && continuationToken !== "yt2009_comments_continuation_token") {
+        r.setRequestHeader(
+            "continuation",
+            continuationToken
+        )
+    } else {
+        r.setRequestHeader(
+            "page",
+            parseInt($(".comments-container").getAttribute("data-page"))
+        )
+    }
     r.setRequestHeader("url_flags", location.href)
     r.setRequestHeader("source", location.href)
     r.send(null)
@@ -114,15 +123,42 @@ function onWatchCommentsShowMore() {
         // add html sent from server
         $(".comments-container").innerHTML += r.responseText
                                                .split(";yt_continuation=")[0]
-        $(".comments-container").setAttribute(
-            "data-continuation-token",
-            r.responseText.split(";yt_continuation=")[1]
-        )
+        try {
+            $(".comments-container").setAttribute(
+                "data-continuation-token",
+                r.responseText.split(";yt_continuation=")[1]
+            )
+        }
+        catch(error) {}
         // calc comment count + add page indicator
         var commentCount = parseInt($("#watch-comment-count").innerHTML)
                          + r.responseText.split("watch-comment-entry").length - 1
         $("#watch-comment-count").innerHTML = commentCount
         $(".comments-container").setAttribute("data-page", nextPage)
+    }, false)
+}
+
+// comment replies
+function loadReplies(continuation, button, commentId) {
+    button.innerHTML = "&raquo; ..."
+    var r = new XMLHttpRequest();
+    r.open("GET", "/comment_get_replies")
+    r.setRequestHeader(
+        "continuation",
+        continuation
+    )
+    r.setRequestHeader(
+        "original-comment",
+        commentId
+    )
+    r.setRequestHeader("source", location.href)
+    r.send(null)
+    r.addEventListener("load", function(e) {
+        var z = document.getElementById("yt2009-reply-holder-" + commentId)
+        setTimeout(function() {
+            button.parentNode.removeChild(button)
+            z.innerHTML += r.responseText
+        }, 50)
     }, false)
 }
 
@@ -446,7 +482,11 @@ if(localStorage && localStorage.widescreenEnabled) {
 // popout
 $("#watch-longform-popup").addEventListener("click", function() {
     var id = window.location.href.split("v=")[1].split("&")[0]
-    window.open("/embed/" + id)
+    var url = "/embed/" + id;
+    if(window.playingAsLive) {
+        url += "?live=1"
+    }
+    window.open(url)
 }, false)
 
 /*
@@ -499,13 +539,13 @@ if(document.querySelector("#watch-playlist-videos-panel")) {
     // refetch jak nie ma filmów zapisanych
     if(document.querySelector(".yt2009_marking_fetch_playlist_client")) {
         // request
-        var r = new XMLHttpRequest();
-        r.open("GET", "/refetch_playlist_watch")
-        r.setRequestHeader("source", location.href)
-        r.send(null)
-        r.addEventListener("load", function(e) {
+        var vr = new XMLHttpRequest();
+        vr.open("GET", "/refetch_playlist_watch?ac=" + Math.random())
+        vr.setRequestHeader("source", location.href)
+        vr.send(null)
+        vr.addEventListener("load", function(e) {
             // dopełnianie htmla wysłanego z serwera
-            $("#watch-playlist-discoverbox").innerHTML += r.responseText
+            $("#watch-playlist-discoverbox").innerHTML += vr.responseText
         }, false)
     }
 }

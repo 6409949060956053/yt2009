@@ -38,7 +38,8 @@ module.exports = {
     },
 
     "handlePlayer": function(playbackSession, offset, req, callback) {
-        if(!playbackSessions[playbackSession]) {
+        if(!playbackSessions[playbackSession]
+        || yt2009utils.isUnsupportedNode()) {
             callback(false)
             return;
         }
@@ -121,15 +122,38 @@ module.exports = {
                 return b.totalbitrate - a.totalbitrate
             })
 
+            if(!audioFmts[0]) {
+                console.log(`couldn't find suitable audio?`)
+                callback(false)
+                return;
+            }
+
+            // list all itags to user
+            let usedItag = audioFmts[0].formatid;
+            let at = audioFmts.filter(s => {
+                return s.formatid == usedItag
+            })
+            let xtagList = []
+            at.forEach(z => {
+                if(z.xtags && z.audioTrack && z.audioTrack.label) {
+                    xtagList.push([z.audioTrack.label, z.xtags].join())
+                }
+            })
+
+
             // cant filter isOriginal on the initial filter wtf??
             let hasAudiotracks = audioFmts.filter(s => {
                 return s.isOriginal !== null && s.isOriginal !== undefined
             }).length
-            let originalAudiotrack = audioFmts.filter(s => {
-                return s.isOriginal
+            let usedAudiotrack = audioFmts.filter(s => {
+                return (
+                    req.query && req.query.xtags
+                    ? s.xtags == req.query.xtags
+                    : s.isOriginal
+                )
             })
-            if(hasAudiotracks >= 1 && originalAudiotrack.length >= 1) {
-                audioFmts = [originalAudiotrack[0]]
+            if(hasAudiotracks >= 1 && usedAudiotrack.length >= 1) {
+                audioFmts = [usedAudiotrack[0]]
             }
 
             //console.log(audioFmts)
@@ -175,8 +199,10 @@ module.exports = {
                         "user-agent": "com.google.android.youtube/20.06.36 (Linux; U; Android 14) gzip"
                     },
                     "body": protoReq
-                }).then(r => {r.buffer().then(r => {
-                    //console.log("response: " + r.length)
+                }).catch(e => {
+                    // retry on network error
+                    pull()
+                }).then(r => {if(!r || !r.status) return;r.buffer().then(r => {
                     if(r.length < 1000) {
                         console.log(`malformed resp? ${r.toString("base64")}`)
                     }
@@ -186,6 +212,12 @@ module.exports = {
                             console.log("redoing request because redirector?")
                             pull()
                         } else {
+                            if(xtagList.length >= 1) {
+                                data.xtags = xtagList.join(";")
+                            }
+                            if(preferedAudioFmt.xtags) {
+                                data.usedXtag = preferedAudioFmt.xtags
+                            }
                             callback(data)
                         }
                     }, (redir) => {
@@ -349,13 +381,11 @@ module.exports = {
         // https://github.com/LuanRT/googlevideo/blob/main/src/core/ChunkedDataBuffer.ts
         // copy of the license available at ./LICENSE-GOOGLEVIDEO
         class chunkedDataBuffer {
-            chunks = [];
-            currentChunkOffset = 0;
-            currentChunkIndex = 0;
-            currentDataView = null;
-            totalLength = 0;
-
             constructor(initChunks) {
+                this.chunks = []
+                this.currentChunkOffset = 0;
+                this.currentDataView = null;
+                this.totalLength = 0;
                 this.currentChunkIndex = 0;
                 if(initChunks && initChunks.length == 1) {
                     this.append(initChunks[0])
@@ -465,8 +495,6 @@ module.exports = {
         }
 
         class ump {
-            chunkedDataBuffer = undefined;
-
             constructor(c) {
                 this.chunkedDataBuffer = c;
             }
@@ -672,7 +700,7 @@ module.exports = {
                     e = String.fromCharCode(e)
                     redirUrl.push(e)
                 }
-                while(redirUrl[0] !== "h") {
+                while(redirUrl[0] && redirUrl[0] !== "h") {
                     redirUrl.shift()
                 }
                 redirUrl = redirUrl.join("")

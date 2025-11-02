@@ -199,7 +199,7 @@
 													<td class="quicklinks-section">
 														<br>
 														<a href="#" class="bold">Promote your Video with Promoted Videos</a><br>
-														<span class="grayText">Create and manage your video and channel promotions on YouTube. Your promotion can appear alongside natural search resutls when people search for similar content.</span>
+														<span class="grayText">Create and manage your video and channel promotions on YouTube. Your promotion can appear alongside natural search results when people search for similar content.</span>
 													</td>
 												</tr>
 											</table>
@@ -425,7 +425,7 @@
 											<span class="autoshare-intro">Your activity feed is the actions that you take on YouTube like favoriting, rating, or uploading a video.</span>
 											<div class="activity-pref">
 												<input id="sharing-enabled" type="radio" name="sharing-enable" class="sharing-set">
-												<label for="sharing-enabled">Yes, allow a selected set of my activities to viewable</label><br>
+												<label for="sharing-enabled">Yes, allow a selected set of my activities to be viewable</label><br>
 												<input id="sharing-disabled" type="radio" name="sharing-enable" class="sharing-set" checked>
 												<label for="sharing-disabled">No, do not allow my activities to be viewable</label>
 											</div>
@@ -490,8 +490,8 @@
                             </div>
                         </div>
 						<div class="body">
-							soon!
-							<form action="/pchelper_profile_setup" id="pchelper-profile-setup-form" class="hid" style="display: none;" method="POST">
+							<p class="bold" id="pchelper-notice">add a pchelper account to see and edit your profile. <a href="/mh_pc_intro">add pchelper</a></p>
+							<form action="/pchelper_profile_setup" id="pchelper-profile-setup-form" class="hid" method="POST">
 								<div class="section-tabs">
 									<div class="section current section-about">
 										<div class="tab" onclick="toggleExpander('profile', 'about')">
@@ -500,7 +500,7 @@
 											</div>
 											<div class="cb"></div>
 										</div>
-										<div class="page" id="page" style="height: 200px;">
+										<div class="page" id="page">
 											<div style="display:inline-block;width:300px;">
 												<div id="user-profile-picture">
 													<div class="user-thumb-large fl">
@@ -541,6 +541,10 @@
 												<div class="field line">
 													<span>Last Name:</span><br>
 													<input type="text" name="last-name" spellcheck="false" autocomplete="off">
+												</div>
+												<div class="field line">
+													<span>Pronouns:</span><br>
+													<input type="text" name="pronouns" spellcheck="false" autocomplete="off">
 												</div>
 												<div class="field">
 													<span>Gender:</span><br>
@@ -735,10 +739,17 @@
 					</tr>
 					<tr>
 						<td><a href="/blog">lang_footer_blog</a></td>
-						<td></td>
+						<td><a href="https://github.com/sponsors/ftde0" target="_blank">lang_footer_gh_sponsor</a></td>
 						<td><a href="/t/creators_corner">lang_footer_corner</a></td>
 						<td></td>
 						<td><a href="/testtube">lang_footer_test</a></td>
+					</tr>
+					<tr>
+						<td><a href="/yt2009_flags.htm">lang_footer_2009flags</a></td>
+						<td></td>
+						<td></td>
+						<td></td>
+						<td></td>
 					</tr>
 				</table>
 			</div>

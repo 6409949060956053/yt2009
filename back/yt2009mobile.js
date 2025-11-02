@@ -135,6 +135,39 @@ module.exports = {
             code = code.replace(`yt2009_upload`, data.upload)
             code = code.replace(`yt2009_thumbnail`, `http://i.ytimg.com/vi/${data.id}/hqdefault.jpg`)
 
+            // flash players
+            if(req.headers.cookie
+            && (req.headers.cookie.includes("http_flash_flv")
+            || req.headers.cookie.includes("http_flash_mp4"))) {
+                let flashId = id;
+                if(req.headers.cookie.includes("http_flash_mp4")) {
+                    flashId += "/mp4"
+                }
+                code = code.replace(
+                    `<!--yt2009_flash-->`,
+                    `<div style="text-align:center;">` +
+                    templates.flashObject(
+                        [`/alt-swf/mp.swf`,
+                        `?base_yt_url=${encodeURIComponent(
+                            `http://${config.ip}:${config.port}`
+                        )}`,
+                        `&onFlashError=ytm.onFlashError&allowseekahead=1`,
+                        `&controlssize=10`,
+                        `&videoId=${flashId}`
+                        ].join(""),
+                        330, 278
+                    ) + `</div>`
+                )
+                code = code.replace(
+                    ` id="yt2009-watch-video-link"`,
+                    ` id="yt2009-watch-video-link" style="visibility:hidden;"`
+                )
+                code = code.replace(
+                    ` id="yt2009-video-thumbnail"`,
+                    ` id="yt2009-video-thumbnail" style="display:none;"`
+                )
+            }
+
             // related
             let relatedHTML = ``
             let relatedIndex = 0;
@@ -173,7 +206,6 @@ module.exports = {
     
                 res.send(code)
             }
-            
         }, req.headers["user-agent"], utils.get_used_token(req), false)
     },
 
@@ -225,6 +257,21 @@ module.exports = {
                 )
             }
         })
+
+        if(req.originalUrl.split("/")[1]) {
+            // url override playback method for http
+            // (compatibility with cookieless)
+            let method = req.originalUrl.split("/")[1]
+                            .split("?")[0].split("#")[0]
+            switch(method) {
+                case "http_3gp":
+                case "http_wmv":
+                case "mp4_144":
+                case "http_xvid": {
+                    playback = method;
+                }
+            }
+        }
         
         let taskLookup = {
             "rtsp_mp4": [ffmpeg_process_144, "rtsp", "id-144.mp4"],
@@ -260,16 +307,26 @@ module.exports = {
                 this.processTask(id, tasks, index + 1, res, callback)
                 return;
             }
-            let command = task.join(" ")
-                          .replace("$1", baseFile)
-                          .replace("$2", output)
-            child_process.exec(command, (err, stdout, stderr) => {
-                // go with the next task
-                if(!tasks[index + 1]) return;
-                this.processTask(id, tasks, index + 1, res, callback)
-                return;
-            })
-            taskFilled = true
+            let t = this;
+            function onCanPerformTask() {
+                let command = task.join(" ")
+                              .replace("$1", baseFile)
+                              .replace("$2", output)
+                child_process.exec(command, (err, stdout, stderr) => {
+                    // go with the next task
+                    if(!tasks[index + 1]) return;
+                    t.processTask(id, tasks, index + 1, res, callback)
+                    return;
+                })
+                taskFilled = true
+            }
+            if(fs.existsSync(baseFile)) {
+                onCanPerformTask()
+            } else {
+                utils.saveMp4(id, () => {
+                    onCanPerformTask()
+                })
+            }
         }
         if(task == "rtsp") {
             // rtsp setup task
@@ -416,7 +473,9 @@ module.exports = {
             "http_mp4_144": "/mp4_144?v=" + id,
             "http_3gp": "/http_3gp?v=" + id,
             "http_wmv": "/http_wmv?v=" + id,
-            "http_xvid": "/http_xvid?v=" + id
+            "http_xvid": "/http_xvid?v=" + id,
+            "http_flash_flv": "/mobile/watch?v=" + id,
+            "http_flash_mp4": "/mobile/watch?v=" + id
         }
 
         if(linkLookup[playback]) {
@@ -532,6 +591,32 @@ module.exports = {
                                .split("\"")[0];
             mobileflags.write_session(req.ip, deviceId)
         }
+        // rewrite urls of standardfeeds for very old android vers
+        if(req.headers["user-agent"]
+        && req.headers["user-agent"].includes("Android-YouTube/1.1")) {
+            let endpoint = req.originalUrl.split("?")[0].split("#")[0]
+            endpoint = endpoint.split("/")
+            endpoint = endpoint[endpoint.length - 1]
+            /*if(config.env == "dev") {
+                console.log(req.originalUrl)
+            }*/
+            switch(endpoint.toLowerCase()) {
+                case "most_viewed":
+                case "top_rated": {
+                    req.originalUrl = req.originalUrl.replace(
+                        endpoint, "most_popular"
+                    )
+                    break;
+                }
+                case "most_discussed":
+                case "most_recent": {
+                    req.originalUrl = req.originalUrl.replace(
+                        endpoint, "recently_featured"
+                    )
+                    break;
+                }
+            }
+        }
         // handle category feeds in a separate function
         if(req.originalUrl.includes("most_viewed_")
         || req.originalUrl.includes("most_discussed_")
@@ -579,12 +664,13 @@ module.exports = {
                         video.author_handle || utils.asciify(authorName),
                         utils.bareCount(video.views),
                         utils.time_to_seconds(data.length || 0),
-                        data.description,
+                        (!req.light ? data.description : ""),
                         data.upload,
                         (data.tags || []).join(),
                         data.category,
                         mobileflags.get_flags(req).watch,
-                        data.qualities
+                        data.qualities,
+                        {"authorId": data.author_id, "omitY9": true}
                     )
                     videosAdded++;
                     if(videosAdded >= vids.length) {
@@ -626,12 +712,13 @@ module.exports = {
                             || utils.asciify(video.uploaderName),
                             utils.bareCount(video.views),
                             utils.time_to_seconds(data.length || 0),
-                            data.description,
+                            (!req.light ? data.description : ""),
                             data.upload,
                             (data.tags || []).join(),
                             data.category,
                             mobileflags.get_flags(req).watch,
-                            data.qualities
+                            data.qualities,
+                            {"authorId": data.author_id, "omitY9": true}
                         )
                         videosAdded++
                     }
@@ -688,7 +775,8 @@ module.exports = {
                 (data.tags || []).join(),
                 data.category,
                 "",
-                data.qualities
+                data.qualities,
+                {"authorId": data.author_id, "omitY9": true}
             )
             res.set("content-type", "application/atom+xml")
             res.send(response)
@@ -852,7 +940,8 @@ module.exports = {
                 rawData.forEach(video => {
                     if(video.type !== "video"
                     || utils.time_to_seconds(video.time) >= 600
-                    || response.includes(video.id) || video.id == id) return;
+                    || response.includes(video.id) || video.id == id
+                    || !video.uploaded) return;
                     let cacheData = yt2009html.get_cache_video(video.id)
 
                     let uploadDate = cacheData.upload
@@ -860,6 +949,15 @@ module.exports = {
                         uploadDate = video.upload
                     } else if(!uploadDate && !video.dataApi) {
                         uploadDate = utils.relativeToAbsoluteApprox(video.uploaded)
+                    }
+
+                    let authorId = false;
+                    if(video.creatorUrl
+                    && video.creatorUrl.startsWith("/channel/")) {
+                        authorId = video.creatorUrl.split("/channel/")[1]
+                    } else if(video.author_url
+                    && video.author_url.startsWith("/channel/")) {
+                        authorId = video.author_url.split("/channel/")[1]
                     }
 
                     response += templates.gdata_feedVideo(
@@ -872,7 +970,9 @@ module.exports = {
                         uploadDate,
                         (cacheData.tags || []).join() || "-",
                         cacheData.category || "-",
-                        mobileflags.get_flags(req).watch
+                        mobileflags.get_flags(req).watch,
+                        null,
+                        {"authorId": authorId, "omitY9": true}
                     )
                 })
 
@@ -891,6 +991,12 @@ module.exports = {
                             uploadDate = video.upload
                         }
 
+                        let authorId = false;
+                        if(video.creatorUrl
+                        && video.creatorUrl.startsWith("/channel/")) {
+                            authorId = video.creatorUrl.split("/channel/")[1]
+                        }
+
                         //let data = yt2009html.get_cache_video(video.id)
                         // only 12 years or older & no repeats
                         response += templates.gdata_feedVideo(
@@ -900,7 +1006,9 @@ module.exports = {
                             utils.bareCount(video.views),
                             utils.time_to_seconds(video.length),
                             yt2009html.get_video_description(video.id),
-                            uploadDate
+                            uploadDate,
+                            undefined, undefined, undefined, undefined,
+                            {"authorId": authorId, "omitY9": true}
                         )
                     }
                 })
@@ -1111,7 +1219,9 @@ module.exports = {
                         upload,
                         (cacheVideo.tags || []).join() || "-",
                         cacheVideo.category || "-",
-                        mobileflags.get_flags(req).watch
+                        mobileflags.get_flags(req).watch,
+                        undefined,
+                        {"authorId": data.id, "omitY9": true}
                     )
                 })
 
@@ -1217,6 +1327,44 @@ module.exports = {
             "headers": {"cookie": ""},
             "query": {"f": 0}}, 
             {"send": function(data) {
+                function pullFavoritesPlaylist(playlist) {
+                    yt2009playlists.parsePlaylist(playlist.id, (data => {
+                        // add videos (kinda limited data but workable)
+                        let response = templates.gdata_feedStart
+
+                        if(req.query.alt == "json") {
+                            yt2009jsongdata.playlistVideos(
+                                data.videos, res, req.query.callback
+                            )
+                            return;
+                        }
+
+                        data.videos.forEach(video => {
+                            let videoCache = yt2009html.get_cache_video(video.id)
+                            response += templates.gdata_feedVideo(
+                                video.id,
+                                video.title,
+                                utils.asciify(video.uploaderName),
+                                utils.bareCount(
+                                    videoCache.viewCount || Math.floor(
+                                        Math.random() * 20000000
+                                    ).toString()
+                                ),
+                                videoCache.length
+                                || Math.floor(Math.random() * 300),
+                                "", "",
+                                undefined, undefined, undefined, undefined,
+                                {"authorId": data.id, "omitY9": true}
+                            )
+                        })
+        
+                        // send response
+                        response += templates.gdata_feedEnd;
+                        res.set("content-type", "application/atom+xml")
+                        res.send(response)
+                    })) 
+                } 
+
                 channels.get_additional_sections(data, "", () => {
                     let response = templates.gdata_feedStart
                     let playlists = channels.get_cache.read("playlist")
@@ -1225,41 +1373,7 @@ module.exports = {
                         playlists[data.id].forEach(playlist => {
                             if(playlist.name == "Favorites") {
                                 hasFavoritesPlaylist = true;
-                                yt2009playlists.parsePlaylist(playlist.id, (data => {
-                                    // add videos (kinda limited data but workable)
-
-                                    if(req.query.alt == "json") {
-                                        yt2009jsongdata.playlistVideos(
-                                            data.videos, res, req.query.callback
-                                        )
-                                        return;
-                                    }
-
-                                    data.videos.forEach(video => {
-                                        let videoCache = yt2009html
-                                                        .get_cache_video(video.id)
-                                        response += templates.gdata_feedVideo(
-                                            video.id,
-                                            video.title,
-                                            utils.asciify(video.uploaderName),
-                                            utils.bareCount(
-                                                videoCache.viewCount
-                                                || Math.floor(
-                                                    Math.random() * 20000000
-                                                ).toString()
-                                            ),
-                                            videoCache.length
-                                            || Math.floor(Math.random() * 300),
-                                            "",
-                                            ""
-                                        )
-                                    })
-        
-                                    // send response
-                                    response += templates.gdata_feedEnd;
-                                    res.set("content-type", "application/atom+xml")
-                                    res.send(response)
-                                })) 
+                                pullFavoritesPlaylist(playlist)
                             }
                         })
                     }
@@ -1402,6 +1516,13 @@ module.exports = {
                 // have full video data?
                 let videoCacheData = yt2009html.get_cache_video(video.id)
 
+                let authorId = false;
+                if(videoCacheData && videoCacheData.author_id) {
+                    authorId = videoCacheData.author_id
+                } else if(video.uploaderId) {
+                    authorId = video.uploaderId
+                }
+
                 // fill
                 response += templates.gdata_feedVideo(
                     video.id,
@@ -1416,7 +1537,9 @@ module.exports = {
                     videoCacheData.upload || "",
                     (videoCacheData.tags || []).join() || "-",
                     videoCacheData.category || "-",
-                    mobileflags.get_flags(req).watch
+                    mobileflags.get_flags(req).watch,
+                    undefined,
+                    {"authorId": authorId, "omitY9": true}
                 )
             })
 
@@ -1467,7 +1590,8 @@ module.exports = {
                 (cacheVideo.tags || []).join() || "-",
                 cacheVideo.category || "",
                 mobileflags.get_flags(req).watch,
-                cacheVideo.qualities
+                cacheVideo.qualities,
+                {"authorId": cacheVideo.author_id, "omitY9": true}
             )
             videosAdded++
         })

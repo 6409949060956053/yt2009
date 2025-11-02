@@ -24,6 +24,11 @@ let ratelimitData = {}
 let ytConfigData = false;
 const playerResponsePb = require("./proto/android_player_pb")
 
+let downloadRetryMax = 5;
+if(config.dl_max_retry && !isNaN(parseInt(config.dl_max_retry))) {
+    downloadRetryMax = parseInt(config.dl_max_retry)
+}
+
 function devlog(text) {
     if(config.env == "dev") {
         console.log(text)
@@ -81,25 +86,57 @@ module.exports = {
     },
 
 
-    "comments_viewmodel_parser": function(response, comment_flags) {
+    "comments_viewmodel_parser": function(response, comment_flags, includeContinuation) {
         devlog("[dev] using comments_viewmodel_parser instead")
         let firstPinned = false;
+        let commentsWithReplies = {}
+        let continuationItems = []
         try {
             response.onResponseReceivedEndpoints.forEach(e => {
                 if(e.reloadContinuationItemsCommand
-                && e.reloadContinuationItemsCommand.continuationItems
-                && e.reloadContinuationItemsCommand.continuationItems[0]
-                && e.reloadContinuationItemsCommand.continuationItems[0]
-                .commentThreadRenderer) {
-                    let first = e.reloadContinuationItemsCommand
-                                 .continuationItems[0]
-                                 .commentThreadRenderer
-                                 .commentViewModel
-                                 .commentViewModel;
-                    if(first.pinnedText) {
-                        firstPinned = true;
+                && e.reloadContinuationItemsCommand.continuationItems) {
+                    continuationItems = e.reloadContinuationItemsCommand
+                                         .continuationItems
+                } else if(e.appendContinuationItemsAction
+                && e.appendContinuationItemsAction.continuationItems) {
+                    continuationItems = e.appendContinuationItemsAction
+                                         .continuationItems
+                }
+            })
+        }
+        catch(error) {}
+        try {
+            if(continuationItems[0]
+            && continuationItems[0].commentThreadRenderer) {
+                let first =  continuationItems[0]
+                             .commentThreadRenderer
+                             .commentViewModel
+                             .commentViewModel;
+                if(first.pinnedText) {
+                    firstPinned = true;
+                }
+            }
+
+            continuationItems.forEach(z => {
+                try {
+                    let y = z.commentThreadRenderer.commentViewModel
+                             .commentViewModel
+                    let cId = y.commentId
+                    if(z.commentThreadRenderer.replies) {
+                        let r = z.commentThreadRenderer.replies
+                                 .commentRepliesRenderer
+                        let viewString = r.viewReplies.buttonRenderer
+                                          .text.runs[0].text;
+                        r = r.contents[0].continuationItemRenderer
+                             .continuationEndpoint.continuationCommand
+                             .token
+                        let rCount = this.bareCount(viewString)
+                        if(r && viewString) {
+                            commentsWithReplies[cId] = [r, rCount]
+                        }
                     }
                 }
+                catch(error) {}
             })
         }
         catch(error) {}
@@ -113,6 +150,11 @@ module.exports = {
                     let content = m.properties.content.content.replace(
                         /\p{Other_Symbol}/gui, ""
                     )
+                    let repliesData = false
+                    try {
+                        repliesData = commentsWithReplies[m.properties.commentId]
+                    }
+                    catch(error) {}
                     comments.push({
                         "authorAvatar": m.author.avatarThumbnailUrl,
                         "authorName": m.author.displayName.replace("@", ""),
@@ -125,25 +167,49 @@ module.exports = {
                         "likes": parseInt(m.toolbar.likeCountA11y.replace(
                             /[^0-9]/g, ""
                         )),
-                        "pinned": (i == 0 && firstPinned)
+                        "pinned": (i == 0 && firstPinned),
+                        "commentId": m.properties.commentId,
+                        "r": repliesData
                     })
                     i++
                 }
             })
 
+            if(includeContinuation
+            && continuationItems.length >= 1) {
+                let last = continuationItems[continuationItems.length - 1]
+                if(last.continuationItemRenderer) {
+                    let token = last.continuationItemRenderer
+                    if(token.continuationEndpoint) {
+                        token = token.continuationEndpoint.continuationCommand
+                                     .token
+                    } else if(token.button) {
+                        token = token.button.buttonRenderer.command
+                                     .continuationCommand.token
+                    } else {
+                        token = false;
+                    }
+                    comments.push({
+                        "continuation": token
+                    })
+                }
+            }
+
             return comments;
         }
         catch(error) {
+            console.log(error)
             return []
         }
     },
 
     
-    "comments_parser": function(response, comment_flags) {
+    "comments_parser": function(response, comment_flags, includeContinuation) {
         if(response.frameworkUpdates) {
-            // parse new viewmodel comments, don't remove old code yet as old
-            // commentRenderers are still common.
-            return this.comments_viewmodel_parser(response, comment_flags)
+            // parse viewmodel comments
+            return this.comments_viewmodel_parser(
+                response, comment_flags, includeContinuation
+            )
         }
         // parse comments from json response
         comment_flags = comment_flags.replace("#", "").split(";")
@@ -1130,11 +1196,27 @@ module.exports = {
     },
 
     "testF18": function(url, callback) {
-        const newHeaders = { ...androidHeaders };
+        const newHeaders = JSON.parse(JSON.stringify(androidHeaders));
         newHeaders.headers.range = `bytes=0-1`;
-        fetch(url, newHeaders).then(r => {
-            callback(r.status !== 403)
-        })
+        let failCount = 0;
+        function testFetch() {
+            fetch(url, newHeaders).catch(err => {
+                failCount++
+                if(failCount > downloadRetryMax) {
+                    devlog(`f18 failed too many times! will retry adaptive`)
+                    callback(false)
+                    return;
+                } else {
+                    devlog(`testf18 network fail! ${failCount}/${downloadRetryMax}`)
+                    testFetch()
+                }
+            }).then(r => {
+                if(!r || !r.status) return;
+                failCount = 0;
+                callback(r.status !== 403)
+            })
+        }
+        testFetch()
     },
 
     "saveMp4_android": function(id, callback, existingPlayer, quality) {
@@ -1354,6 +1436,7 @@ module.exports = {
                     `-i "${__dirname}/${audioFile}"`,
                     `-c:v copy -c:a copy`,
                     `-map 0:v -map 1:a`,
+                    `-movflags +faststart`,
                     `"${__dirname}/../assets/${fname}.mp4"`
                 ].join(" ")
 
@@ -1433,7 +1516,7 @@ module.exports = {
             rHeaders.Authorization = `Bearer ${d}`
         }
 
-        const formatRequestMode = "protobuf"
+        const formatRequestMode = (!this.isUnsupportedNode() ? "protobuf" : "json")
 
         if(formatRequestMode == "protobuf") {
             rHeaders["Content-Type"] = "application/x-protobuf"
@@ -1532,6 +1615,10 @@ module.exports = {
             "method": "POST",
             "mode": "cors"
         }).then(r => {r.json().then(r => {
+            if(r.streamingData && r.streamingData.adaptiveFormats) {
+                // adaptiveformats dont work with this request method
+                r.streamingData.adaptiveFormats = []
+            }
             parseResponse(r);
         })})
     },
@@ -1597,12 +1684,36 @@ module.exports = {
             }
         }
         const stream = fs.createWriteStream(out, {flags: "w"});
+        let lastPartFailCount = 0;
         function fetchNextPart() {
             adjustPartsize()
-            const newHeaders = { ...androidHeaders };
+            const newHeaders = JSON.parse(JSON.stringify(androidHeaders));
             newHeaders.headers.range = `bytes=${startB}-${startB + partSize}`;
-            fetch(url, newHeaders).then(r => {
+            newHeaders.timeout = 40000
+            fetch(url, newHeaders).catch(e => {
+                lastPartFailCount++
+                let failFriendly = `(${lastPartFailCount}/${downloadRetryMax})`
+                if(lastPartFailCount > downloadRetryMax) {
+                    devlog(`part ${startB}b failed too many times! rejecting`)
+                    stream.end()
+                    try {fs.unlinkSync(out)}catch(error){
+                        try {fs.writeFileSync(out, "")}
+                        catch(error){}
+                    }
+                    callback("RETRY")
+                    return;
+                }
+                devlog(`part ${startB}b failed! retrying ${failFriendly}`)
+                setTimeout(() => {
+                    fetchNextPart()
+                }, 500)
+            }).then(r => {
+                if(!r) return;
+                lastPartFailCount = 0;
                 if(r.status == 403) {
+                    console.log(`googlevideo returned 403 while downloading!`)
+                    console.log(`${url}/${startB}/${partSize}`)
+                    console.log(`(if reporting, make sure to clear your IP!)`)
                     stream.end()
                     try {fs.unlinkSync(out)}catch(error){
                         try {fs.writeFileSync(out, "")}
@@ -1639,7 +1750,7 @@ module.exports = {
                     if(metadata) {
                         let f = metadata
                         let cdata = yt2009exports.read().verboseDownloadProgress[f]
-                        if(cdata.type && cdata.type == "NONDASH") {
+                        if(cdata && cdata.type && cdata.type == "NONDASH") {
                             cdata.state = "DONE"
                             yt2009exports.extendWrite(
                                 "verboseDownloadProgress", f, cdata
@@ -2239,6 +2350,12 @@ module.exports = {
                     }
                     break;
                 }
+                case "duration": {
+                    if(!requestedParts.includes("contentDetails")) {
+                        requestedParts.push("contentDetails")
+                    }
+                    break;
+                }
             }
         })
 
@@ -2256,6 +2373,7 @@ module.exports = {
             "method": "GET"
         }).then(r => {try {r.json().then(r => {
             if(!r.error && r.items) {
+                let index = 0;
                 r.items.forEach(item => {
                     let neededData = {}
                     requestedData.forEach(property => {
@@ -2263,9 +2381,13 @@ module.exports = {
                             neededData[property] = item.snippet[property]
                         } else if(item.statistics && item.statistics[property]) {
                             neededData[property] = item.statistics[property]
+                        } else if(item.contentDetails && item.contentDetails[property]) {
+                            neededData[property] = item.contentDetails[property]
                         }
                     })
+                    neededData.index = index;
                     results[item.id] = neededData
+                    index++
                 })
 
                 callback(results)
@@ -2416,6 +2538,48 @@ module.exports = {
             }
         })
         return a.join("")
+    },
+
+    "isUnsupportedNode": function() {
+        let major = 10;
+        try {
+            major = parseInt(process.version.replace("v", "").split(".")[0])
+        }
+        catch(error) {
+            major = 10;
+        }
+        return (major < 10)
+    },
+
+    "dataApiDurationSeconds": function(time) {
+        if(!time) return 0;
+        let at = 0;
+        if(time.includes("PT")) {
+            time = time.split("PT")[1]
+        }
+        if(time.includes("S")) {
+            let s = time.split("S")[0]
+            if(time.includes("M")) {
+                s = time.split("M")[1]
+            } else if(time.includes("H")) {
+                s = time.split("H")[1]
+            }
+            s = parseInt(s)
+            at += s;
+        }
+        if(time.includes("M")) {
+            let m = time.split("M")[0]
+            if(time.includes("H")) {
+                m = time.split("H")[1]
+            }
+            m = parseInt(m)
+            at += (m * 60)
+        }
+        if(time.includes("H")) {
+            let hours = parseInt(time.split("H")[0])
+            at += (hours * 3600)
+        }
+        return at;
     }
 }
 

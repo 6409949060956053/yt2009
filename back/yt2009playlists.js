@@ -96,7 +96,7 @@ module.exports = {
         return code;
     },
 
-    "parsePlaylist": function(playlistId, callback) {
+    "parsePlaylist": function(playlistId, callback, sourceVideo) {
         if(cache.read()[playlistId]) {
             callback(JSON.parse(JSON.stringify(cache.read()[playlistId])))
             return JSON.parse(JSON.stringify(cache.read()[playlistId]));
@@ -112,6 +112,66 @@ module.exports = {
                 "videoCount": "",
                 "playlistId": playlistId
             }
+
+            if(playlistId.startsWith("RD") && sourceVideo) {
+                // special handling for radio playlists
+                //let ogId = playlistId.replace("RD", "")
+                fetch(`https://www.youtube.com/youtubei/v1/next`, {
+                    "headers": constants.headers,
+                    "referrer": `https://www.youtube.com/`,
+                    "referrerPolicy": "strict-origin-when-cross-origin",
+                    "body": JSON.stringify({
+                        "videoId": sourceVideo,
+                        "playlistId": playlistId,
+                        "context": constants.cached_innertube_context,
+                        "autonavState": "STATE_ON",
+                        "contentCheckOk": true,
+                        "racyCheckOk": true
+                    }),
+                    "method": "POST",
+                    "mode": "cors"
+                }).then(r => {r.json().then(r => {
+                    if(r.contents && r.contents.twoColumnWatchNextResults
+                    && r.contents.twoColumnWatchNextResults.playlist
+                    && r.contents.twoColumnWatchNextResults.playlist.playlist) {
+                        let p = r.contents.twoColumnWatchNextResults
+                                 .playlist.playlist;
+                        let vids = []
+                        p.contents.forEach(v => {
+                            if(v.playlistPanelVideoRenderer) {
+                                v = v.playlistPanelVideoRenderer
+                                try {
+                                    let thumb = [
+                                        "http://i.ytimg.com/vi/",
+                                        v.videoId,
+                                        "/hqdefault.jpg"
+                                    ].join("")
+                                    let by = v.shortBylineText.runs[0]
+                                    let byId = by.navigationEndpoint
+                                                 .browseEndpoint.browseId
+                                    vids.push({
+                                        "id": v.videoId,
+                                        "title": v.title.simpleText,
+                                        "thumbnail": thumb,
+                                        "uploaderName": by.text,
+                                        "uploaderId": byId,
+                                        "uploaderUrl": "/channel/" + byId,
+                                        "time": v.lengthText ?
+                                                v.lengthText.simpleText : "",
+                                        "views": "0"
+                                    })
+                                }
+                                catch(error) {console.log(error)}
+                            }
+                        })
+                        callback({"videos": vids})
+                    } else {
+                        callback(false)
+                    }
+                })})
+                return;
+            }
+
             this.innertube_get_data(playlistId, (r) => {
                 if(!r.contents) {
                     callback(false)
@@ -166,6 +226,8 @@ module.exports = {
                 playlistArray.forEach(video => {
                     if(!video.playlistVideoRenderer) return;
                     video = video.playlistVideoRenderer
+                    if((video.videoInfo && !video.videoInfo.runs)
+                    || (!video.videoInfo)) return; //skip members-only?
                     videoList.videos.push({
                         "id": video.videoId,
                         "title": video.title.runs[0].text,
@@ -173,12 +235,20 @@ module.exports = {
                                     + video.videoId
                                     + "/hqdefault.jpg",
                         "uploaderName": video.shortBylineText.runs[0].text,
-                        "uploaderUrl": video.shortBylineText.runs[0]
-                                            .navigationEndpoint.browseEndpoint
-                                            .canonicalBaseUrl,
-                        "uploaderId": video.shortBylineText.runs[0]
-                                           .navigationEndpoint.browseEndpoint
-                                           .browseId,
+                        "uploaderUrl": ((video.shortBylineText.runs[0]
+                                         .navigationEndpoint
+                                      && video.shortBylineText.runs[0]
+                                         .navigationEndpoint.browseEndpoint
+                                      && video.shortBylineText.runs[0]
+                                         .navigationEndpoint.browseEndpoint
+                                         .canonicalBaseUrl)||""),
+                        "uploaderId": ((video.shortBylineText.runs[0]
+                                         .navigationEndpoint
+                                      && video.shortBylineText.runs[0]
+                                         .navigationEndpoint.browseEndpoint
+                                      && video.shortBylineText.runs[0]
+                                         .navigationEndpoint.browseEndpoint
+                                         .browseId)||""),
                         "time": video.lengthText ?
                                 video.lengthText.simpleText : "",
                         "views": utils.approxSubcount(
